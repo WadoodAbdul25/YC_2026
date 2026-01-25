@@ -4,6 +4,6 @@ import os
 # Ensure proper app structure
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from FlowSync.noise_filtering import NoiseFilter
+from backend.models import Email, Task, Response
 
 # Add your test cases here

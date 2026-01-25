@@ -1,14 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "gryffin"
 version = "0.1.0"
 description = "Gryffin CLI"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 readme = "README.md"
 dependencies = [
   "openai>=1.0.0",
   "python-dotenv>=1.0.0",
   "typer>=0.12.0",
   "watchdog>=4.0.0",
+  "google-generativeai>=0.8.0",
+  "rich>=13.0.0",
 ]
 
 [project.scripts]

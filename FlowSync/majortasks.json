@@ -2,58 +2,48 @@
   "major_tasks": [
     {
       "acceptance_criteria": [
-        "React app is created with 'create-react-app'.",
-        "App can connect to the existing Django API endpoints.",
-        "'npm run start' successfully launches the local development server."
+        "Cerebras API Client code removed from the project.",
+        "All references to Cerebras API replaced with OpenAI API calls.",
+        "System successfully compiles and runs without errors."
       ],
-      "dependencies": [],
-      "description": "Initialize a new React project and configure it to connect with the existing Django backend.",
+      "dependencies": [
+        "Existing API integration with Cerebras"
+      ],
+      "description": "Eliminate the integration with the Cerebras API client and ensure that the system solely relies on the OpenAI API for its functionalities.",
       "owners": [
-        "Frontend Developer"
+        "Development Team"
       ],
-      "title": "Set Up React Frontend"
+      "title": "Remove Cerebras API Client Setup"
     },
     {
       "acceptance_criteria": [
-        "Tailwind CSS is installed and configured without errors.",
-        "Frontend components use Tailwind CSS for styling."
+        "User interface for noise filtering is functional and responsive.",
+        "Task draft functionality allows users to create and save drafts.",
+        "Response draft functionality allows users to view and edit responses successfully."
       ],
       "dependencies": [
-        "Set Up React Frontend"
+        "Completion of the Cerebras API removal task"
       ],
-      "description": "Install and configure Tailwind CSS to style the frontend components.",
+      "description": "Develop the necessary views to interact with the OpenAI API. This includes creating user interfaces for noise filtering, task drafts, and response drafts.",
       "owners": [
-        "Frontend Developer"
+        "Frontend Development Team"
       ],
-      "title": "Integrate Tailwind CSS"
+      "title": "Implement OpenAI Views"
     },
     {
       "acceptance_criteria": [
-        "All specified UI components are developed.",
-        "Components are responsive and styled according to design guidelines."
+        "Noise filtering function processes JSON data correctly.",
+        "Tasks can be drafted and retrieved without issues.",
+        "Responses can be drafted and modified, with changes reflected correctly."
       ],
       "dependencies": [
-        "Integrate Tailwind CSS"
+        "Completion of the OpenAI Views task"
       ],
-      "description": "Design and build the main UI components required for the application, utilizing React and Tailwind CSS.",
+      "description": "Conduct tests using arbitrary JSON data to verify that all functionalities, including noise filtering, task drafts, and response drafts, are operational.",
       "owners": [
-        "Frontend Developer"
+        "QA Team"
       ],
-      "title": "Build UI Components"
-    },
-    {
-      "acceptance_criteria": [
-        "All necessary API endpoints are called correctly.",
-        "Data from the backend is displayed in the frontend as expected."
-      ],
-      "dependencies": [
-        "Build UI Components"
-      ],
-      "description": "Implement API calls in the React frontend to interact with the Django backend services.",
-      "owners": [
-        "Frontend Developer"
-      ],
-      "title": "Connect to Django Backend"
+      "title": "Testing with Arbitrary JSON Data"
     }
   ]
 }

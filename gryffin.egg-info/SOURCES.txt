@@ -9,6 +9,9 @@ gryffin.egg-info/top_level.txt
 gryffin_cli/__init__.py
 gryffin_cli/cli.py
 pipeline/__init__.py
+pipeline/context_builder.py
+pipeline/debugger.py
+pipeline/executor.py
 pipeline/llm.py
 pipeline/planner.py
 prompt_taker/__init__.py
