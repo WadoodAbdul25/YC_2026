@@ -1,0 +1,59 @@
+{
+  "major_tasks": [
+    {
+      "acceptance_criteria": [
+        "React app is created with 'create-react-app'.",
+        "App can connect to the existing Django API endpoints.",
+        "'npm run start' successfully launches the local development server."
+      ],
+      "dependencies": [],
+      "description": "Initialize a new React project and configure it to connect with the existing Django backend.",
+      "owners": [
+        "Frontend Developer"
+      ],
+      "title": "Set Up React Frontend"
+    },
+    {
+      "acceptance_criteria": [
+        "Tailwind CSS is installed and configured without errors.",
+        "Frontend components use Tailwind CSS for styling."
+      ],
+      "dependencies": [
+        "Set Up React Frontend"
+      ],
+      "description": "Install and configure Tailwind CSS to style the frontend components.",
+      "owners": [
+        "Frontend Developer"
+      ],
+      "title": "Integrate Tailwind CSS"
+    },
+    {
+      "acceptance_criteria": [
+        "All specified UI components are developed.",
+        "Components are responsive and styled according to design guidelines."
+      ],
+      "dependencies": [
+        "Integrate Tailwind CSS"
+      ],
+      "description": "Design and build the main UI components required for the application, utilizing React and Tailwind CSS.",
+      "owners": [
+        "Frontend Developer"
+      ],
+      "title": "Build UI Components"
+    },
+    {
+      "acceptance_criteria": [
+        "All necessary API endpoints are called correctly.",
+        "Data from the backend is displayed in the frontend as expected."
+      ],
+      "dependencies": [
+        "Build UI Components"
+      ],
+      "description": "Implement API calls in the React frontend to interact with the Django backend services.",
+      "owners": [
+        "Frontend Developer"
+      ],
+      "title": "Connect to Django Backend"
+    }
+  ]
+}
