@@ -1,0 +1,2 @@
+[console_scripts]
+gryffin = gryffin_cli.cli:main

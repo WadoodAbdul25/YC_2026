@@ -1,0 +1,104 @@
+{
+  "major_tasks": [
+    {
+      "acceptance_criteria": [
+        "Django project initialized successfully.",
+        "Settings adjusted to work with OpenAI API and Google Client.",
+        "Documentation on environment variable setup provided."
+      ],
+      "dependencies": [],
+      "description": "Initialize the Django project and configure the necessary settings for the email parser application.",
+      "owners": [
+        "Backend Developer"
+      ],
+      "title": "Set Up Django Backend"
+    },
+    {
+      "acceptance_criteria": [
+        "Emails can be parsed and tasks identified accurately under various scenarios.",
+        "Implementation that categorizes emails into needs response, needs task, or both."
+      ],
+      "dependencies": [
+        "Set Up Django Backend"
+      ],
+      "description": "Develop the functionality to parse incoming emails in JSON format and filter tasks based on their urgency and required actions.",
+      "owners": [
+        "Backend Developer"
+      ],
+      "title": "Implement Email Parsing Logic"
+    },
+    {
+      "acceptance_criteria": [
+        "OpenAI API integrated with the backend.",
+        "Responses generated meet quality standards and are contextually relevant."
+      ],
+      "dependencies": [
+        "Set Up Django Backend"
+      ],
+      "description": "Set up the connection to the OpenAI API for drafting human-like responses to emails that require a response.",
+      "owners": [
+        "Backend Developer"
+      ],
+      "title": "Integrate OpenAI API"
+    },
+    {
+      "acceptance_criteria": [
+        "Frontend is responsive and intuitive.",
+        "Users can view, manage tasks and responses from the email parser."
+      ],
+      "dependencies": [
+        "Set Up Django Backend"
+      ],
+      "description": "Create a user-friendly interface using React.js to display parsed email tasks and allow users to interact with tasks easily.",
+      "owners": [
+        "Frontend Developer"
+      ],
+      "title": "Develop React.js Frontend"
+    },
+    {
+      "acceptance_criteria": [
+        "Google Client connection working, able to add events to Google Calendar.",
+        "Documentation provided for .env file configuration."
+      ],
+      "dependencies": [
+        "Set Up Django Backend"
+      ],
+      "description": "Establish a connection with Google services for scheduling tasks and syncing with the user's Google Calendar.",
+      "owners": [
+        "Backend Developer"
+      ],
+      "title": "Setup Google Client Connection"
+    },
+    {
+      "acceptance_criteria": [
+        "Email processing time is under the target threshold.",
+        "Accuracy rate for identifying tasks is above the specified benchmark."
+      ],
+      "dependencies": [
+        "Implement Email Parsing Logic",
+        "Integrate OpenAI API"
+      ],
+      "description": "Optimize the application to ensure low latency in email processing and task identification.",
+      "owners": [
+        "Backend Developer",
+        "Frontend Developer"
+      ],
+      "title": "Performance Optimization"
+    },
+    {
+      "acceptance_criteria": [
+        "All functionalities are tested across various scenarios.",
+        "Bugs and issues documented and resolved before release."
+      ],
+      "dependencies": [
+        "Develop React.js Frontend",
+        "Setup Google Client Connection"
+      ],
+      "description": "Conduct thorough testing of both frontend and backend to ensure overall application functionality.",
+      "owners": [
+        "QA Engineer"
+      ],
+      "title": "Testing and QA"
+    }
+  ]
+}
