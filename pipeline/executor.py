@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import select
 import subprocess
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +17,63 @@ import platform
 from datetime import datetime
 
 MAX_AUTO_RETRY_ATTEMPTS = 15  # Ralph Wiggum mode: "I'm helping!" until it works
+
+
+class GryffinSessionTracker:
+    """
+    Tracks files created/modified by GRYFFIN during the current session.
+    This allows us to skip overwrite confirmations for files we created.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._created_files: set[str] = set()
+            cls._instance._modified_files: set[str] = set()
+            cls._instance._error_log: list[dict[str, Any]] = []
+        return cls._instance
+
+    def track_created(self, file_path: str | Path) -> None:
+        """Track a file that GRYFFIN created."""
+        self._created_files.add(str(file_path))
+
+    def track_modified(self, file_path: str | Path) -> None:
+        """Track a file that GRYFFIN modified."""
+        self._modified_files.add(str(file_path))
+
+    def is_gryffin_file(self, file_path: str | Path) -> bool:
+        """Check if a file was created or modified by GRYFFIN this session."""
+        path_str = str(file_path)
+        return path_str in self._created_files or path_str in self._modified_files
+
+    def log_error_fix(self, error: str, fix_applied: str, file_path: str | None = None) -> None:
+        """Log an error that was fixed for user visibility."""
+        self._error_log.append({
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "error": error[:500],  # Truncate long errors
+            "fix": fix_applied,
+            "file": file_path
+        })
+
+    def get_error_log(self) -> list[dict[str, Any]]:
+        """Get all errors that were fixed during this session."""
+        return self._error_log
+
+    def get_created_files(self) -> set[str]:
+        """Get all files created during this session."""
+        return self._created_files.copy()
+
+    def reset(self) -> None:
+        """Reset the tracker for a new session."""
+        self._created_files.clear()
+        self._modified_files.clear()
+        self._error_log.clear()
+
+
+# Global session tracker
+session_tracker = GryffinSessionTracker()
 
 
 def log_user_interaction(target_dir: Path, context: str, choice: str, instructions: str = "") -> None:
@@ -397,6 +458,7 @@ class ExecutionContext:
     completed_tasks: list[str]
     file_tree_snapshot: dict[str, Any]
     readme_content: str = ""
+    codebase_insight: dict[str, Any] | None = None
 
 
 @dataclass
@@ -504,7 +566,13 @@ def detect_environment(snapshot: dict[str, Any], target_dir: Path) -> dict[str, 
     return env_info
 
 
-def setup_environment(env_info: dict[str, Any], target_dir: Path, architecture: dict[str, Any]) -> bool:
+def setup_environment(
+    env_info: dict[str, Any],
+    target_dir: Path,
+    architecture: dict[str, Any],
+    readme_content: str = "",
+    codebase_insight: dict[str, Any] | None = None
+) -> bool:
     """Set up the project environment based on detected needs."""
     print("\n🔧 Setting up environment...")
 
@@ -518,9 +586,31 @@ def setup_environment(env_info: dict[str, Any], target_dir: Path, architecture: 
     os_type = platform.system()  # Darwin (macOS), Linux, Windows
     os_version = platform.release()
 
+    # Build context from README and codebase insight
+    context_section = ""
+    if readme_content:
+        context_section += f"""
+## PROJECT README (MUST FOLLOW THIS)
+{readme_content[:3000]}
+"""
+
+    if codebase_insight:
+        context_section += f"""
+## EXISTING CODEBASE ANALYSIS (MUST RESPECT THIS)
+Tech Stack: {json.dumps(codebase_insight.get('tech_stack', {}), indent=2)}
+Existing Dependencies: {codebase_insight.get('tech_stack', {}).get('dependencies', [])}
+Architecture: {codebase_insight.get('architecture_summary', 'N/A')}
+Patterns to Follow: {codebase_insight.get('recommendations', {}).get('patterns_to_follow', 'N/A')}
+
+CRITICAL: Only install dependencies that are compatible with the existing tech stack.
+Do NOT install conflicting versions or alternative frameworks.
+"""
+
     # Use LLM to generate setup instructions
     setup_prompt = f"""Given this project architecture:
 {json.dumps(architecture, indent=2)}
+
+{context_section}
 
 And these detected setup needs:
 {', '.join(needs_setup)}
@@ -535,6 +625,12 @@ CRITICAL OS-SPECIFIC REQUIREMENTS:
 - Windows: Use choco or direct installers
 - ALWAYS check if tools are already installed before trying to install them
 
+CRITICAL ARCHITECTURE REQUIREMENTS:
+- ONLY install dependencies that match the architecture in the README
+- Do NOT deviate from the decided tech stack
+- If the README specifies certain versions, use those exact versions
+- Do NOT add new frameworks or libraries not mentioned in the architecture
+
 Generate COMPLETE setup commands including:
 
 1. PROJECT INITIALIZATION (if needed):
@@ -545,6 +641,7 @@ Generate COMPLETE setup commands including:
 
 2. DEPENDENCIES:
    - Install required packages (pip install, npm install, etc.)
+   - ONLY install what's in the architecture/README
 
 3. CONFIGURATION:
    - Create .env file with all necessary environment variables
@@ -731,6 +828,38 @@ def generate_task_code(
     """Generate code for a specific task using LLM."""
     print(f"\n💻 Generating code for task {task_index + 1}: {task.get('title')}...")
 
+    # Build codebase context section if available
+    codebase_context = ""
+    if context.codebase_insight:
+        insight = context.codebase_insight
+        codebase_context = f"""
+## EXISTING CODEBASE ANALYSIS (CRITICAL - MUST RESPECT)
+
+**Project Type**: {insight.get('project_type', 'Unknown')}
+**Architecture**: {insight.get('architecture_summary', 'N/A')}
+
+**Existing Tech Stack**:
+{json.dumps(insight.get('tech_stack', {}), indent=2)}
+
+**Existing Functionality** (DO NOT DUPLICATE):
+{chr(10).join(['- ' + f for f in insight.get('existing_functionality', [])[:10]])}
+
+**Patterns to Follow**:
+{insight.get('recommendations', {}).get('patterns_to_follow', 'Follow existing code patterns')}
+
+**Integration Points**:
+{insight.get('recommendations', {}).get('integration_points', 'Integrate with existing modules')}
+
+**Cautions**:
+{insight.get('recommendations', {}).get('cautions', 'Respect existing architecture')}
+
+CRITICAL: Your code MUST integrate with the existing codebase. Do NOT:
+- Create duplicate functionality that already exists
+- Use different frameworks/libraries than what's already in use
+- Break existing patterns or conventions
+- Introduce incompatible dependencies
+"""
+
     prompt = f"""You are implementing this task:
 
 Task: {task.get('title')}
@@ -738,7 +867,7 @@ Description: {task.get('description')}
 
 ## Project README (IMPORTANT - Read First!)
 {context.readme_content if context.readme_content else "No README available"}
-
+{codebase_context}
 ## Project Architecture
 {json.dumps(context.architecture, indent=2)}
 
@@ -753,12 +882,14 @@ Generate a complete, production-ready implementation for this task.
 
 CRITICAL RULES:
 1. **Follow the README**: The project README defines what this app IS and IS NOT. Stay within those bounds.
-2. **Respect the architecture**: Use the specified tech stack and follow the defined data flow.
+2. **Respect the architecture**: Use ONLY the specified tech stack - do NOT introduce new frameworks.
 3. **Proper file locations**: Place files in the correct directories based on the file tree structure.
 4. **Django projects**: If this is a Django project, put code in proper Django apps (not in the root).
 5. **Complete imports**: Include all necessary import statements.
 6. **Proper test setup**: For Django, include proper pytest configuration (conftest.py, pytest.ini).
 7. **Mock external services**: Mock any external APIs (OpenAI, Google, etc.) in tests.
+8. **No dependency drift**: Only use dependencies that are in the architecture. Do NOT add new ones without explicit need.
+9. **Integrate, don't replace**: If there's existing code, integrate with it rather than replacing it.
 
 Generate the implementation. Return JSON with:
 - files: array of {{path: "relative/path/in/correct/location", content: "complete file content with all imports", action: "create" | "modify"}}
@@ -767,7 +898,7 @@ Generate the implementation. Return JSON with:
 """
 
     result = generate_json(
-        "You are a senior software engineer who meticulously follows project architecture and README guidelines. You place files in correct locations, include all imports, mock external services in tests, and create production-ready code. Return only valid JSON with files, tests, and description.",
+        "You are a senior software engineer who meticulously follows project architecture and README guidelines. You NEVER introduce new frameworks or libraries not in the tech stack. You place files in correct locations, include all imports, mock external services in tests, and create production-ready code. Return only valid JSON with files, tests, and description.",
         prompt
     )
 
@@ -795,6 +926,15 @@ def apply_code_changes(code_result: dict[str, Any], target_dir: Path) -> bool:
 
             if action == "create":
                 if file_path.exists():
+                    # Check if this is a file GRYFFIN created - if so, no need to ask
+                    if session_tracker.is_gryffin_file(file_path):
+                        # GRYFFIN created this file, just overwrite silently
+                        file_path.write_text(content, encoding="utf-8")
+                        session_tracker.track_modified(file_path)
+                        print(f"✓ Updated: {file_info['path']} (GRYFFIN file)")
+                        continue
+
+                    # File exists but wasn't created by GRYFFIN - ask user
                     print(f"⚠️  File already exists: {file_info['path']}")
                     choice, instructions = get_user_input(
                         f"Overwrite {file_info['path']}? (y/n, or add instructions like 'y, but keep the existing imports')",
@@ -811,6 +951,7 @@ def apply_code_changes(code_result: dict[str, Any], target_dir: Path) -> bool:
                         print("   (Manual merge may be needed)")
 
                 file_path.write_text(content, encoding="utf-8")
+                session_tracker.track_created(file_path)
                 print(f"✓ Created: {file_info['path']}")
 
             elif action == "modify":
@@ -821,6 +962,7 @@ def apply_code_changes(code_result: dict[str, Any], target_dir: Path) -> bool:
                         continue
 
                 file_path.write_text(content, encoding="utf-8")
+                session_tracker.track_modified(file_path)
                 print(f"✓ Modified: {file_info['path']}")
 
         except Exception as e:
@@ -847,12 +989,20 @@ def apply_code_changes(code_result: dict[str, Any], target_dir: Path) -> bool:
             test_path.parent.mkdir(parents=True, exist_ok=True)
 
             if test_path.exists():
+                # Check if this is a file GRYFFIN created - if so, no need to ask
+                if session_tracker.is_gryffin_file(test_path):
+                    test_path.write_text(content, encoding="utf-8")
+                    session_tracker.track_modified(test_path)
+                    print(f"✓ Updated test: {test_info['path']} (GRYFFIN file)")
+                    continue
+
                 print(f"⚠️  Test file already exists: {test_info['path']}")
                 choice, _ = get_user_input(f"Overwrite {test_info['path']}? (y/n)")
                 if choice not in ["y", "yes"]:
                     continue
 
             test_path.write_text(content, encoding="utf-8")
+            session_tracker.track_created(test_path)
             print(f"✓ Created test: {test_info['path']}")
         except Exception as e:
             print(f"✗ Error creating test {test_info['path']}: {e}")
@@ -985,8 +1135,20 @@ def run_tests(target_dir: Path, test_type: str = "all", auto_fix: bool = True, r
                     break
 
                 # Apply the fix from debugging agent
-                print(f"\n💡 Debugging agent fix ({debug_fix.confidence} confidence):")
+                print(f"\n{'='*60}")
+                print(f"🔧 ERROR FIX #{retry_count + 1}")
+                print(f"{'='*60}")
+                print(f"\n📋 Problem identified:")
                 print(f"   {debug_fix.explanation}")
+                print(f"\n🎯 Confidence: {debug_fix.confidence}")
+
+                # Track the error fix for user visibility
+                session_tracker.log_error_fix(
+                    error=error_output[:300],
+                    fix_applied=debug_fix.explanation
+                )
+
+                print(f"\n📝 Changes being applied:")
 
                 # Apply file deletions
                 for file_path in debug_fix.files_to_delete:
@@ -1002,6 +1164,7 @@ def run_tests(target_dir: Path, test_type: str = "all", auto_fix: bool = True, r
                         file_path = target_dir / file_info["path"]
                         file_path.parent.mkdir(parents=True, exist_ok=True)
                         file_path.write_text(file_info["content"], encoding="utf-8")
+                        session_tracker.track_created(file_path)
                         print(f"   ✓ Created: {file_info['path']}")
                     except Exception as e:
                         print(f"   ✗ Failed to create {file_info['path']}: {e}")
@@ -1011,6 +1174,7 @@ def run_tests(target_dir: Path, test_type: str = "all", auto_fix: bool = True, r
                     try:
                         file_path = target_dir / file_info["path"]
                         file_path.write_text(file_info["content"], encoding="utf-8")
+                        session_tracker.track_modified(file_path)
                         print(f"   ✓ Modified: {file_info['path']}")
                     except Exception as e:
                         print(f"   ✗ Failed to modify {file_info['path']}: {e}")
@@ -1092,20 +1256,26 @@ def check_for_errors(target_dir: Path, env_info: dict[str, Any], auto_fix: bool 
             except Exception as e:
                 errors.append(f"Error checking {py_file.name}: {e}")
 
-    # Node.js syntax check
+    # Node.js lint check (only if lint script exists)
     if project_type == "node":
+        package_json = target_dir / "package.json"
         try:
-            result = subprocess.run(
-                "npm run lint 2>&1 || true",
-                shell=True,
-                cwd=target_dir,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            if "error" in result.stdout.lower():
-                errors.append(f"Linting errors found:\n{result.stdout}")
-        except Exception as e:
+            if package_json.exists():
+                with package_json.open() as f:
+                    pkg = json.load(f)
+                scripts = pkg.get("scripts", {})
+                if "lint" in scripts:
+                    result = subprocess.run(
+                        "npm run lint 2>&1 || true",
+                        shell=True,
+                        cwd=target_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if "error" in result.stdout.lower():
+                        errors.append(f"Linting errors found:\n{result.stdout}")
+        except Exception:
             pass  # Linting is optional
 
     if not errors:
@@ -1208,7 +1378,7 @@ def execute_task(
     if choice == "skip":
         print("⏭️  Skipping this task")
         return True
-    elif choice not in ["y", "yes"]:
+    elif not choice.startswith("y"):
         print("❌ Task cancelled")
         return False
 
@@ -1365,6 +1535,499 @@ def detect_project_type(target_dir: Path) -> str:
         return "python"
     return "unknown"
 
+def _iter_project_dirs(target_dir: Path) -> list[Path]:
+    """Return project directories while skipping common ignore folders."""
+    ignore = {"node_modules", ".git", "__pycache__", "venv", "env", ".venv", "dist", "build"}
+    dirs = []
+    for path in target_dir.rglob("*"):
+        if not path.is_dir():
+            continue
+        if any(part in ignore for part in path.parts):
+            continue
+        dirs.append(path)
+    return dirs
+
+
+def _find_django_projects(target_dir: Path) -> list[Path]:
+    """Find directories containing manage.py."""
+    projects = []
+    for path in [target_dir, *_iter_project_dirs(target_dir)]:
+        if (path / "manage.py").exists():
+            projects.append(path)
+    return projects
+
+
+def _find_node_projects(target_dir: Path) -> list[Path]:
+    """Find directories containing package.json."""
+    projects = []
+    for path in [target_dir, *_iter_project_dirs(target_dir)]:
+        if (path / "package.json").exists():
+            projects.append(path)
+    return projects
+
+
+def _smoke_start(command: str, cwd: Path, timeout: int = 8) -> tuple[bool, str, str]:
+    """Start a long-running dev server briefly to verify it launches."""
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception as e:
+        print(f"✗ Failed to start '{command}': {e}")
+        return False, "", str(e)
+
+    start_time = time.time()
+    try:
+        while time.time() - start_time < timeout:
+            if proc.poll() is not None:
+                if proc.returncode == 0:
+                    return True, "", ""
+                stderr = (proc.stderr.read() if proc.stderr else "")[:2000]
+                stdout = (proc.stdout.read() if proc.stdout else "")[:2000]
+                print(f"✗ Command exited early: {command}")
+                if stderr:
+                    print(f"  {stderr}")
+                elif stdout:
+                    print(f"  {stdout}")
+                return False, stdout, stderr
+            time.sleep(0.5)
+        # Still running after timeout -> assume it started OK
+        return True, "", ""
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _has_frontend_error(line: str) -> bool:
+    lowered = line.lower()
+    return (
+        "module not found" in lowered
+        or "can't resolve" in lowered
+        or "error in" in lowered
+        or "failed to compile" in lowered
+    )
+
+
+def _smoke_start_frontend(command: str, cwd: Path, timeout: int = 20) -> tuple[bool, str, str]:
+    """Start frontend dev server briefly and fail if compile errors appear."""
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        print(f"✗ Failed to start '{command}': {e}")
+        return False, "", str(e)
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    error_detected = False
+
+    start_time = time.time()
+    try:
+        while time.time() - start_time < timeout:
+            if proc.poll() is not None:
+                break
+
+            reads = []
+            if proc.stdout:
+                reads.append(proc.stdout)
+            if proc.stderr:
+                reads.append(proc.stderr)
+
+            if not reads:
+                time.sleep(0.2)
+                continue
+
+            ready, _, _ = select.select(reads, [], [], 0.5)
+            for stream in ready:
+                line = stream.readline()
+                if not line:
+                    continue
+                if stream is proc.stdout:
+                    stdout_lines.append(line)
+                else:
+                    stderr_lines.append(line)
+                if _has_frontend_error(line):
+                    error_detected = True
+
+            if error_detected:
+                break
+
+        # Drain any remaining output
+        try:
+            if proc.stdout:
+                remaining = proc.stdout.read() or ""
+                if remaining:
+                    stdout_lines.append(remaining)
+            if proc.stderr:
+                remaining = proc.stderr.read() or ""
+                if remaining:
+                    stderr_lines.append(remaining)
+        except Exception:
+            pass
+
+        stdout_text = "".join(stdout_lines)
+        stderr_text = "".join(stderr_lines)
+        combined = f"{stdout_text}\n{stderr_text}"
+
+        # Catch CRA/webpack summary lines
+        if "compiled with" in combined.lower() and "error" in combined.lower():
+            error_detected = True
+
+        if error_detected:
+            print(f"✗ Frontend compile error detected")
+            return False, stdout_text, stderr_text
+
+        if proc.poll() is not None and proc.returncode not in (0, None):
+            return False, stdout_text, stderr_text
+
+        return True, stdout_text, stderr_text
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _start_persistent(command: str, cwd: Path, name: str) -> None:
+    """Start a long-running server and keep it running in the background."""
+    log_dir = cwd / ".gryffin_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{name}.log"
+
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] START {command}\n")
+
+    subprocess.Popen(
+        command,
+        shell=True,
+        cwd=cwd,
+        stdout=log_file.open("a", encoding="utf-8"),
+        stderr=log_file.open("a", encoding="utf-8"),
+        start_new_session=True,
+    )
+    print(f"✓ Started {name}. Logs: {log_file}")
+
+
+def _auto_fix_frontend_errors(error_output: str, cwd: Path) -> bool:
+    """Attempt to fix common frontend errors automatically."""
+    if not error_output:
+        return False
+
+    fixed_any = False
+    pattern = re.compile(r"Can't resolve '([^']+)' in '([^']+)'")
+    for match in pattern.finditer(error_output):
+        module, base_dir = match.groups()
+        if module.startswith("."):
+            # Missing local file (e.g., ./TaskTimeline.css)
+            missing_path = (Path(base_dir) / module).resolve()
+            if missing_path.suffix == "":
+                missing_path = missing_path.with_suffix(".js")
+            if not missing_path.exists():
+                missing_path.parent.mkdir(parents=True, exist_ok=True)
+                missing_path.write_text("", encoding="utf-8")
+                print(f"✓ Created missing file: {missing_path}")
+                fixed_any = True
+        else:
+            # Missing dependency (e.g., axios)
+            ok = run_command_with_retry(
+                f"npm install {module}",
+                cwd,
+                f"installing missing frontend dependency: {module}",
+            )
+            fixed_any = fixed_any or ok
+
+    return fixed_any
+
+
+def _run_frontend_build(command: str, cwd: Path) -> bool:
+    """Run a frontend build/lint to surface compile errors and auto-fix."""
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    if result.returncode == 0:
+        return True
+
+    combined = f"{result.stdout}\n{result.stderr}"
+    fixed = _auto_fix_frontend_errors(combined, cwd)
+    if fixed:
+        retry = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return retry.returncode == 0
+
+    return False
+
+
+def _infer_run_targets(prompt: str) -> tuple[bool, bool]:
+    text = prompt.lower()
+    backend = any(k in text for k in ["backend", "django", "api", "server", "runserver", "manage.py", "migrate"])
+    frontend = any(k in text for k in ["frontend", "react", "web", "ui", "client", "npm", "vite", "next"])
+    if not backend and not frontend:
+        return True, True
+    return backend, frontend
+
+
+def verify_project_runs(
+    target_dir: Path,
+    architecture: dict[str, Any],
+    auto_run: bool = True,
+    run_backend: bool = True,
+    run_frontend: bool = True,
+) -> tuple[bool, str]:
+    """
+    Verify that the project can actually run with 1-2 commands.
+
+    Returns:
+        (success, instructions) - True if verified, instructions for running
+    """
+    print("\n" + "=" * 60)
+    print("🔍 VERIFYING PROJECT IS RUNNABLE")
+    print("=" * 60)
+
+    tech_stack = architecture.get("tech_stack", {})
+    run_instructions = []
+
+    # Check for common project types and their run commands
+    project_type = None
+
+    # Check Django (support nested backend/)
+    django_projects = _find_django_projects(target_dir) if run_backend else []
+    for dj_dir in django_projects:
+        project_type = "Django"
+        check_ok = run_command_with_retry(
+            "python manage.py check",
+            dj_dir,
+            "running Django system checks",
+            max_retries=3,
+        )
+        if check_ok:
+            print(f"✓ Django project check passed ({dj_dir})")
+
+        rel = dj_dir.relative_to(target_dir)
+        prefix = f"cd {rel}" if str(rel) != "." else None
+        if prefix:
+            run_instructions.append(f"{prefix}\n  python manage.py runserver")
+        else:
+            run_instructions.append("python manage.py runserver")
+
+    # Check Node.js / Next.js / React
+    node_projects = _find_node_projects(target_dir) if run_frontend else []
+    for node_dir in node_projects:
+        try:
+            with (node_dir / "package.json").open() as f:
+                pkg = json.load(f)
+                scripts = pkg.get("scripts", {})
+
+                rel = node_dir.relative_to(target_dir)
+                prefix = f"cd {rel}" if str(rel) != "." else None
+
+                if not (node_dir / "node_modules").exists():
+                    if prefix:
+                        run_instructions.append(f"{prefix}\n  npm install")
+                    else:
+                        run_instructions.append("npm install")
+
+                if "dev" in scripts:
+                    project_type = project_type or "Node.js"
+                    cmd = "npm run dev"
+                elif "start" in scripts:
+                    project_type = project_type or "Node.js"
+                    cmd = "npm start"
+                else:
+                    cmd = None
+
+                if cmd:
+                    if prefix:
+                        run_instructions.append(f"{prefix}\n  {cmd}")
+                    else:
+                        run_instructions.append(cmd)
+        except Exception:
+            pass
+
+    # Check Flask
+    if (target_dir / "app.py").exists() or any(target_dir.glob("**/app.py")):
+        if not project_type:
+            project_type = "Flask"
+            run_instructions.append("flask run")
+
+    # Check Python requirements
+    if (target_dir / "requirements.txt").exists():
+        # Check if venv exists
+        if not any((target_dir / d).exists() for d in ["venv", "env", ".venv"]):
+            run_instructions.insert(0, "python -m venv venv && source venv/bin/activate && pip install -r requirements.txt")
+
+    if not run_instructions:
+        # Generic instructions based on tech stack
+        backend = tech_stack.get("backend", {})
+        if isinstance(backend, dict):
+            framework = backend.get("framework", "").lower()
+        else:
+            framework = str(backend).lower()
+
+        if "django" in framework:
+            run_instructions.append("python manage.py runserver")
+        elif "flask" in framework:
+            run_instructions.append("flask run")
+        elif "fastapi" in framework:
+            run_instructions.append("uvicorn main:app --reload")
+        elif "node" in framework or "express" in framework:
+            run_instructions.append("npm start")
+        elif "next" in framework:
+            run_instructions.append("npm run dev")
+
+    instructions = "\n".join([f"  {i+1}. {cmd}" for i, cmd in enumerate(run_instructions)])
+
+    if run_instructions:
+        auto_ok = True
+        if auto_run:
+            print("\n▶ Auto-running detected dev commands...")
+            persist_flag = os.environ.get("GRYFFIN_PERSIST_SERVERS", "false").strip().lower()
+            persist_servers = persist_flag in {"1", "true", "yes", "on"}
+
+            # Django: migrate + smoke start
+            for dj_dir in django_projects:
+                migrate_ok = run_command_with_retry(
+                    "python manage.py migrate",
+                    dj_dir,
+                    "running Django migrations",
+                )
+                auto_ok = auto_ok and migrate_ok
+
+                if migrate_ok:
+                    ok, out, err = _smoke_start("python manage.py runserver", dj_dir)
+                    if not ok and "port is already in use" in (err or "").lower():
+                        print("ℹ️  Django server already running; continuing.")
+                        ok = True
+                    auto_ok = auto_ok and ok
+                    if persist_servers and ok:
+                        _start_persistent("python manage.py runserver", dj_dir, "django-runserver")
+
+            # Node: install + smoke start
+            for node_dir in node_projects:
+                if not (node_dir / "node_modules").exists():
+                    auto_ok = auto_ok and run_command_with_retry(
+                        "npm install",
+                        node_dir,
+                        "installing node dependencies",
+                    )
+
+                # Decide start command
+                try:
+                    with (node_dir / "package.json").open() as f:
+                        pkg = json.load(f)
+                        scripts = pkg.get("scripts", {})
+                        if "build" in scripts:
+                            print(f"\n▶ Running: npm run build ({node_dir})")
+                            build_ok = _run_frontend_build("npm run build", node_dir)
+                            auto_ok = auto_ok and build_ok
+                        elif "lint" in scripts:
+                            print(f"\n▶ Running: npm run lint ({node_dir})")
+                            lint_ok = _run_frontend_build("npm run lint", node_dir)
+                            auto_ok = auto_ok and lint_ok
+                        if "dev" in scripts:
+                            print(f"\n▶ Running: npm run dev ({node_dir})")
+                            ok, out, err = _smoke_start_frontend("npm run dev", node_dir)
+                            if not ok:
+                                fixed = _auto_fix_frontend_errors(out + "\n" + err, node_dir)
+                                if fixed:
+                                    ok, _, _ = _smoke_start_frontend("npm run dev", node_dir)
+                            auto_ok = auto_ok and ok
+                            if persist_servers and ok:
+                                _start_persistent("npm run dev", node_dir, "npm-dev")
+                        elif "start" in scripts:
+                            print(f"\n▶ Running: npm start ({node_dir})")
+                            ok, out, err = _smoke_start_frontend("npm start", node_dir)
+                            if not ok:
+                                fixed = _auto_fix_frontend_errors(out + "\n" + err, node_dir)
+                                if fixed:
+                                    ok, _, _ = _smoke_start_frontend("npm start", node_dir)
+                            auto_ok = auto_ok and ok
+                            if persist_servers and ok:
+                                _start_persistent("npm start", node_dir, "npm-start")
+                except Exception:
+                    pass
+
+            if auto_ok:
+                print("✓ Auto-run verification succeeded")
+            else:
+                print("⚠️  Auto-run verification had failures; see logs above")
+
+        if auto_ok:
+            print(f"\n✅ Project appears runnable!")
+            print(f"\n📋 To run the project:")
+            print(instructions)
+            return True, instructions
+        print("\n⚠️  Project run verification failed")
+        print(f"\n📋 Suggested run commands:\n{instructions}")
+        return False, instructions
+    else:
+        print("\n⚠️  Could not auto-detect run commands")
+        return False, "Please refer to the README.md for run instructions"
+
+
+def run_action_prompt(prompt: str, target_dir: Path) -> None:
+    """Run quick actions (e.g., start backend/frontend) without regenerating plans."""
+    print("\n" + "=" * 80)
+    print("⚡ ACTION MODE")
+    print("=" * 80)
+    print(f"Prompt: {prompt}")
+
+    run_backend, run_frontend = _infer_run_targets(prompt)
+
+    auto_run_flag = os.environ.get("GRYFFIN_AUTO_RUN", "true").strip().lower()
+    auto_run = auto_run_flag not in {"0", "false", "no", "off"}
+
+    success, instructions = verify_project_runs(
+        target_dir,
+        architecture={},
+        auto_run=auto_run,
+        run_backend=run_backend,
+        run_frontend=run_frontend,
+    )
+
+    print("\n" + "=" * 80)
+    if success:
+        print("✅ ACTION COMPLETE")
+    else:
+        print("⚠️  ACTION FINISHED WITH WARNINGS")
+    print("=" * 80)
+
+    if instructions:
+        print(f"\n📋 Run commands:\n{instructions}")
+
 
 def start_execution(
     architecture_path: Path,
@@ -1376,6 +2039,9 @@ def start_execution(
     print("\n" + "=" * 80)
     print("🎯 STARTING EXECUTION PHASE")
     print("=" * 80)
+
+    # Reset session tracker for new execution
+    session_tracker.reset()
 
     # Load architecture and tasks
     with architecture_path.open() as f:
@@ -1395,9 +2061,9 @@ def start_execution(
     # Detect environment
     env_info = detect_environment(snapshot, target_dir)
 
-    # Setup environment if needed
+    # Setup environment if needed - now with README and codebase context
     if env_info.get("needs_setup"):
-        if not setup_environment(env_info, target_dir, architecture):
+        if not setup_environment(env_info, target_dir, architecture, readme_content, codebase_insight):
             print("\n❌ Environment setup failed. Please set up manually and try again.")
             return
 
@@ -1408,7 +2074,8 @@ def start_execution(
         tasks=tasks_data,
         completed_tasks=[],
         file_tree_snapshot=snapshot,
-        readme_content=readme_content
+        readme_content=readme_content,
+        codebase_insight=codebase_insight
     )
 
     # Execute tasks one by one
@@ -1419,9 +2086,70 @@ def start_execution(
             print(f"\n❌ Execution stopped at task {i + 1}")
             return
 
+    # Final project verification
     print("\n" + "=" * 80)
     print("🎉 ALL TASKS COMPLETED SUCCESSFULLY!")
     print("=" * 80)
-    print(f"\nCompleted tasks:")
+
+    print(f"\n✅ Completed tasks:")
     for i, task_title in enumerate(context.completed_tasks, 1):
         print(f"  {i}. ✓ {task_title}")
+
+    # Show error fixes summary
+    error_log = session_tracker.get_error_log()
+    if error_log:
+        print(f"\n🔧 Errors fixed during execution ({len(error_log)} total):")
+        for i, fix in enumerate(error_log[-10:], 1):  # Show last 10
+            print(f"  {i}. [{fix['timestamp']}] {fix['fix'][:80]}...")
+        if len(error_log) > 10:
+            print(f"  ... and {len(error_log) - 10} more fixes")
+
+    # Show created files summary
+    created_files = session_tracker.get_created_files()
+    if created_files:
+        print(f"\n📁 Files created/modified ({len(created_files)} total):")
+        for f in sorted(list(created_files)[:15]):
+            print(f"  • {f}")
+        if len(created_files) > 15:
+            print(f"  ... and {len(created_files) - 15} more files")
+
+    # Verify project is runnable
+    auto_run_flag = os.environ.get("GRYFFIN_AUTO_RUN", "true").strip().lower()
+    auto_run = auto_run_flag not in {"0", "false", "no", "off"}
+    success, run_instructions = verify_project_runs(target_dir, architecture, auto_run=auto_run)
+
+    print("\n" + "=" * 80)
+    print("🚀 PROJECT READY!")
+    print("=" * 80)
+
+    if success:
+        print(f"\n📋 To run your project:\n{run_instructions}")
+    else:
+        print(f"\n{run_instructions}")
+
+    # Update README with run instructions
+    readme_path = target_dir / "README.md"
+    if readme_path.exists():
+        current_readme = readme_path.read_text()
+        if "## Quick Start" not in current_readme:
+            quick_start = f"""
+
+## Quick Start
+
+To run this project:
+
+{run_instructions}
+
+---
+"""
+            # Insert after the first heading
+            lines = current_readme.split("\n")
+            insert_idx = 2  # After title
+            for i, line in enumerate(lines):
+                if line.startswith("## "):
+                    insert_idx = i
+                    break
+
+            lines.insert(insert_idx, quick_start)
+            readme_path.write_text("\n".join(lines))
+            print(f"\n✓ README.md updated with Quick Start instructions")

@@ -8,6 +8,44 @@ from typing import Any
 from .llm import LLMError, generate_json
 
 
+ACTION_KEYWORDS = {
+    "run",
+    "start",
+    "launch",
+    "serve",
+    "dev server",
+    "migrate",
+    "migration",
+    "npm start",
+    "npm run",
+    "runserver",
+    "manage.py",
+}
+
+NON_ACTION_HINTS = {
+    "make",
+    "build",
+    "add",
+    "create",
+    "design",
+    "implement",
+    "feature",
+    "pretty",
+    "ui",
+    "frontend redesign",
+}
+
+
+def is_action_prompt(prompt: str) -> bool:
+    """Return True if the prompt looks like a run/start/ops request."""
+    text = prompt.strip().lower()
+    if not text:
+        return False
+    if any(hint in text for hint in NON_ACTION_HINTS):
+        return False
+    return any(keyword in text for keyword in ACTION_KEYWORDS)
+
+
 @dataclass(frozen=True)
 class PlanArtifacts:
     architecture_path: Path
@@ -326,6 +364,11 @@ def watch_prompt_file(prompt_path: str | Path, target_dir: str | Path) -> None:
             last_prompt = prompt
             print(f"\n✓ Detected change in prompt.txt")
             print(f"  Prompt: {prompt}")
+            if is_action_prompt(prompt):
+                from .executor import run_action_prompt
+                print("  Action request detected — running commands...\n")
+                run_action_prompt(prompt, target_dir)
+                return
             print(f"  Running planner...\n")
             run_planner(prompt, target_dir)
             print(f"✓ Architecture updated: {target_dir / 'architecture.json'}")

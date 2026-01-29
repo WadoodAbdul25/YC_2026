@@ -154,21 +154,26 @@ def collect_codebase_files(target_dir: Path) -> dict[str, str]:
     return files
 
 
-def get_gemini_client() -> Any:
-    """Get Gemini API client."""
+def get_gemini_client() -> tuple[str, Any, Any]:
+    """Get Gemini API client (prefers new google-genai, falls back to legacy)."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not found in environment variables")
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        return genai
-    except ImportError:
-        raise RuntimeError(
-            "google-generativeai package not installed. "
-            "Install with: pip install google-generativeai"
-        )
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        return "genai", genai, client
+    except Exception:
+        try:
+            import google.generativeai as genai  # Legacy client
+            genai.configure(api_key=api_key)
+            return "legacy", genai, genai
+        except ImportError as e:
+            raise RuntimeError(
+                "google-genai package not installed. "
+                "Install with: pip install google-genai"
+            ) from e
 
 
 def analyze_with_gemini(files: dict[str, str], target_dir: Path) -> dict[str, Any]:
@@ -184,7 +189,7 @@ def analyze_with_gemini(files: dict[str, str], target_dir: Path) -> dict[str, An
     """
     console.print("\n[bold cyan]🤖 Analyzing codebase with Gemini 2.0 Flash...[/bold cyan]")
 
-    genai = get_gemini_client()
+    flavor, genai, client = get_gemini_client()
 
     # Build the prompt with full codebase context
     file_contents = []
@@ -257,15 +262,30 @@ IMPORTANT:
 
         try:
             # Use Gemini 2.0 Flash (latest model with large context)
-            model = genai.GenerativeModel('gemini-2.0-flash-exp')
-
-            response = model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": 0.1,  # Low temperature for consistent analysis
-                    "max_output_tokens": 8192,
-                }
-            )
+            if flavor == "genai":
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash-exp",
+                        contents=prompt,
+                        config=genai.types.GenerateContentConfig(
+                            temperature=0.1,
+                            max_output_tokens=8192,
+                        ),
+                    )
+                except TypeError:
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash-exp",
+                        contents=prompt,
+                    )
+            else:
+                model = client.GenerativeModel("gemini-2.0-flash-exp")
+                response = model.generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": 0.1,  # Low temperature for consistent analysis
+                        "max_output_tokens": 8192,
+                    },
+                )
 
             progress.update(task, description="✓ Analysis complete")
 
